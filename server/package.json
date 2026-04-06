@@ -1,0 +1,14 @@
+{
+  "name": "trade-flow-tracker-server",
+  "version": "3.0.0",
+  "description": "Express server for Trade Flow Tracker — proxies SEC EDGAR, House & Senate STOCK Act data",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.0",
+    "node-fetch": "^2.7.0"
+  }
+}
