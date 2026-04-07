@@ -141,9 +141,16 @@ function FreshnessCell({ latestDate, earliestDate }) {
 
 function compareField(a, b, key, dir) {
   let av = a[key], bv = b[key];
-  if (typeof av === "string") return dir==="asc"?av.localeCompare(bv||""):(bv||"").localeCompare(av);
-  av=av??-Infinity; bv=bv??-Infinity;
-  return dir==="asc"?av-bv:bv-av;
+  // Treat null, undefined, NaN as sortable bottom values
+  const aNull = av == null || (typeof av === "number" && isNaN(av));
+  const bNull = bv == null || (typeof bv === "number" && isNaN(bv));
+  if (aNull && bNull) return 0;
+  if (aNull) return 1;  // nulls always sort to bottom
+  if (bNull) return -1;
+  if (typeof av === "string" || typeof bv === "string") {
+    return dir==="asc" ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av));
+  }
+  return dir==="asc" ? av - bv : bv - av;
 }
 
 function multiSort(data, sorts) {

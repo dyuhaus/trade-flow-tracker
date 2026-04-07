@@ -72,6 +72,10 @@ function recordObservation(namespace, ticker, current, now = Date.now()) {
   // Numeric fields to track
   const fields = ['count', 'shares', 'price', 'value'];
 
+  // Determine "new" from the filing date, not when the server first saw it
+  const filingDate = current.latestDate ? new Date(current.latestDate).getTime() : 0;
+  const isNewByFiling = filingDate > 0 && (now - filingDate) <= NEW_WINDOW_MS;
+
   if (!prev) {
     // First time seeing this ticker
     const metrics = {};
@@ -84,7 +88,7 @@ function recordObservation(namespace, ticker, current, now = Date.now()) {
       prev: { ...current }
     };
     return {
-      isNew: true,
+      isNew: isNewByFiling,
       isRising: false,
       deltas: Object.fromEntries(fields.map(f => [f, { value: 0, active: false }]))
     };
@@ -115,7 +119,7 @@ function recordObservation(namespace, ticker, current, now = Date.now()) {
     prev: { ...current }
   };
 
-  const isNew     = (now - prev.firstSeen) <= NEW_WINDOW_MS;
+  const isNew     = isNewByFiling;
   const isRising  = countIncreases.length >= 2;
 
   return { isNew, isRising, deltas };
@@ -129,7 +133,8 @@ function enrichRows(namespace, rows) {
       count: row.count || 0,
       shares: row.shares || 0,
       price: row.pricePerShare || row.price || 0,
-      value: row.value || 0
+      value: row.value || 0,
+      latestDate: row.latestDate || null
     }, now);
     return { ...row, ...obs };
   });

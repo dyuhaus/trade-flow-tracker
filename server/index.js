@@ -31,11 +31,18 @@ async function loadTickerMap() {
 }
 
 // ── Parse Form 4 XML for transaction details ──────────────────
+// Extract <value> directly inside a parent element, ignoring footnotes
+function extractValue(block, parentTag) {
+  const pattern = new RegExp(`<${parentTag}>\\s*<value>([^<]+)<`, 's');
+  const m = block.match(pattern);
+  return m ? m[1].trim() : null;
+}
+
 function parseTxBlock(block) {
-  const code   = (block.match(/<transactionCode>([^<]+)</) || [])[1] || '';
-  const shares = parseFloat((block.match(/<transactionShares>[\s\S]*?<value>([^<]+)</) || [])[1]) || 0;
-  const price  = parseFloat((block.match(/<transactionPricePerShare>[\s\S]*?<value>([^<]+)</) || [])[1]) || 0;
-  const acqDisp = (block.match(/<transactionAcquiredDisposedCode>[\s\S]*?<value>([^<]+)</) || [])[1] || '';
+  const code    = (block.match(/<transactionCode>([^<]+)</) || [])[1] || '';
+  const shares  = parseFloat(extractValue(block, 'transactionShares')) || 0;
+  const price   = parseFloat(extractValue(block, 'transactionPricePerShare')) || 0;
+  const acqDisp = extractValue(block, 'transactionAcquiredDisposedCode') || '';
   return { code, shares, price, value: shares * price, acqDisp };
 }
 
@@ -58,7 +65,7 @@ function parseForm4Xml(xml) {
     const tx = parseTxBlock(block);
     // Use exercise price if the per-share price is 0
     if (tx.price === 0) {
-      const exPrice = parseFloat((block.match(/<conversionOrExercisePrice>[\s\S]*?<value>([^<]+)</) || [])[1]) || 0;
+      const exPrice = parseFloat(extractValue(block, 'conversionOrExercisePrice')) || 0;
       if (exPrice > 0) {
         tx.price = exPrice;
         tx.value = tx.shares * exPrice;
@@ -70,23 +77,95 @@ function parseForm4Xml(xml) {
   return { ticker, issuer, transactions };
 }
 
+// ── Price returns from Yahoo Finance ──────────────────────────
+let priceCache = {};
+const PRICE_CACHE_TTL = 60 * 60 * 1000; // 1 hour
+
+async function fetchReturns(ticker) {
+  const now = Date.now();
+  if (priceCache[ticker] && (now - priceCache[ticker].fetched) < PRICE_CACHE_TTL) {
+    return priceCache[ticker].returns;
+  }
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=1mo&interval=1d`;
+    const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+    const data = await r.json();
+    const result = (data.chart && data.chart.result && data.chart.result[0]) || {};
+    const closes = (result.indicators && result.indicators.quote && result.indicators.quote[0] && result.indicators.quote[0].close) || [];
+    // Filter out nulls
+    const valid = closes.filter(c => c != null);
+    if (valid.length < 2) {
+      priceCache[ticker] = { returns: null, fetched: now };
+      return null;
+    }
+    const current = valid[valid.length - 1];
+    const prev1d  = valid.length >= 2 ? valid[valid.length - 2] : null;
+    const prev1w  = valid.length >= 6 ? valid[valid.length - 6] : null;
+    const prev1m  = valid[0];
+
+    const pct = (cur, prev) => prev && prev !== 0 ? Math.round(((cur - prev) / prev) * 10000) / 100 : null;
+
+    const returns = {
+      currentPrice: current,
+      change1d: pct(current, prev1d),
+      change1w: pct(current, prev1w),
+      change1m: pct(current, prev1m)
+    };
+    priceCache[ticker] = { returns, fetched: now };
+    return returns;
+  } catch {
+    priceCache[ticker] = { returns: null, fetched: now };
+    return null;
+  }
+}
+
+async function attachReturns(rows) {
+  // Fetch in parallel, with a concurrency limit to avoid hammering Yahoo
+  const BATCH_SIZE = 10;
+  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+    const batch = rows.slice(i, i + BATCH_SIZE);
+    const results = await Promise.all(batch.map(row => fetchReturns(row.ticker)));
+    for (let j = 0; j < batch.length; j++) {
+      const r = results[j];
+      if (r) {
+        batch[j].change1d = r.change1d;
+        batch[j].change1w = r.change1w;
+        batch[j].change1m = r.change1m;
+        // Fill in missing price/value using current market price
+        if (r.currentPrice > 0 && (!batch[j].pricePerShare || batch[j].pricePerShare === 0)) {
+          batch[j].pricePerShare = Math.round(r.currentPrice * 100) / 100;
+          if (batch[j].shares > 0) {
+            batch[j].value = Math.round(batch[j].shares * r.currentPrice);
+          }
+        }
+      }
+    }
+  }
+  return rows;
+}
+
 // ── Form 4 — SEC EDGAR (enriched) ────────────────────────────
 app.get('/api/form4', async (req, res) => {
-  const days  = parseInt(req.query.days) || 14;
-  const start = new Date(Date.now() - days * 864e5).toISOString().slice(0, 10);
-  const end   = new Date().toISOString().slice(0, 10);
+  const days  = parseInt(req.query.days) || 30;
 
   try {
-    // Step 1: Get filing list from EFTS (up to 200 results across 2 pages)
+    // Step 1: Query EFTS in weekly chunks so we get coverage across the
+    // full date range (EFTS returns newest-first, so a single 30-day
+    // query only yields the most recent few days within 500 hits).
     const allHits = [];
-    for (let from = 0; from < 200; from += 100) {
+    const CHUNK_DAYS = 7;
+    const HITS_PER_CHUNK = 100; // 1 page per week keeps it fast
+    const now = Date.now();
+
+    for (let offset = 0; offset < days; offset += CHUNK_DAYS) {
+      const chunkEnd   = new Date(now - offset * 864e5).toISOString().slice(0, 10);
+      const chunkStart = new Date(now - Math.min(offset + CHUNK_DAYS, days) * 864e5).toISOString().slice(0, 10);
       const url = `https://efts.sec.gov/LATEST/search-index?forms=4` +
-        `&dateRange=custom&startdt=${start}&enddt=${end}&hits.hits._source=true&from=${from}`;
+        `&dateRange=custom&startdt=${chunkStart}&enddt=${chunkEnd}&hits.hits._source=true&from=0`;
       const r = await fetch(url, { headers: HEADERS });
       const data = await r.json();
       const hits = (data.hits && data.hits.hits) || [];
-      allHits.push(...hits);
-      if (hits.length < 100) break;
+      allHits.push(...hits.slice(0, HITS_PER_CHUNK));
     }
 
     // Step 2: Group filings by issuer CIK, resolve tickers
@@ -123,10 +202,10 @@ app.get('/api/form4', async (req, res) => {
       }
     }
 
-    // Step 3: Sort by filing count, take top 25
+    // Step 3: Sort by filing count, take top 30
     const top = Object.values(issuerMap)
       .sort((a, b) => b.count - a.count)
-      .slice(0, 25);
+      .slice(0, 30);
 
     // Step 4: Fetch one XML per ticker to get shares, price, and type
     const enriched = await Promise.all(top.map(async (entry) => {
@@ -199,6 +278,7 @@ app.get('/api/form4', async (req, res) => {
       };
     }));
 
+    await attachReturns(enriched);
     res.json({ source: 'sec-edgar', data: enrichRows('form4', enriched) });
   } catch (e) {
     res.status(502).json({ error: e.message });
@@ -281,6 +361,7 @@ app.get('/api/congress', async (req, res) => {
       ? all.filter(r => chamberFilter === 'House' ? r.House === 'Representatives' : r.House === 'Senate')
       : all;
     const aggregated = aggregateCongress(filtered).slice(0, 50);
+    await attachReturns(aggregated);
     res.json({ data: enrichRows('congress', aggregated) });
   } catch (e) { res.status(502).json({ error: e.message }); }
 });
