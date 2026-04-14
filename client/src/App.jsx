@@ -281,8 +281,11 @@ function FlagBadge({ kind }) {
   );
 }
 
-function Form4Table({ data, filter, sorts, setSorts }) {
-  const filtered = data.filter(r => filter==="All"||r.type===filter);
+function Form4Table({ data, filter, sorts, setSorts, search }) {
+  const filtered = data.filter(r =>
+    (filter==="All"||r.type===filter) &&
+    (!search || r.ticker.toLowerCase().includes(search) || (r.company||"").toLowerCase().includes(search))
+  );
   const sorted   = multiSort(filtered, sorts);
   const maxCount  = Math.max(...filtered.map(r=>r.count),1);
   const maxShares = Math.max(...filtered.map(r=>r.shares||0),1);
@@ -354,10 +357,11 @@ function Form4Table({ data, filter, sorts, setSorts }) {
   );
 }
 
-function CongressTable({ data, filter, chamberFilter, sorts, setSorts }) {
+function CongressTable({ data, filter, chamberFilter, sorts, setSorts, search }) {
   const filtered = data.filter(r =>
     (filter==="All"||r.type===filter) &&
-    (chamberFilter==="All"||r.chamber===chamberFilter||r.chamber==="Both")
+    (chamberFilter==="All"||r.chamber===chamberFilter||r.chamber==="Both") &&
+    (!search || r.ticker.toLowerCase().includes(search) || (r.company||"").toLowerCase().includes(search))
   );
   const sorted   = multiSort(filtered, sorts);
   const maxCount = Math.max(...filtered.map(r=>r.count),1);
@@ -465,6 +469,7 @@ export default function App() {
   const [cgChamber, setCgChamber] = useState("All");
   const [cgSort,    setCgSort]    = useState([{ col:"count", dir:"desc" }]);
   const [cgLoading, setCgLoading] = useState(false);
+  const [search,    setSearch]    = useState("");
 
   // Relative URLs — work on localhost AND through Cloudflare Tunnel
   const fetchForm4 = useCallback(async () => {
@@ -541,7 +546,11 @@ export default function App() {
         <div>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12, flexWrap:"wrap", gap:8 }}>
             <StatusBadge live={f4Live} />
-            <div style={{ display:"flex", gap:8 }}>
+            <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+              <input type="text" placeholder="Search ticker or company…" value={search}
+                onChange={e => setSearch(e.target.value.toLowerCase())}
+                style={{ fontSize:12, padding:"4px 10px", borderRadius:6, border:"0.5px solid var(--color-border-tertiary)",
+                  background:"var(--color-background-secondary)", color:"var(--color-text-primary)", width:180, outline:"none" }} />
               {["All","Buy","Sell"].map(f=><FilterBtn key={f} label={f} active={f4Filter===f} onClick={()=>setF4Filter(f)} />)}
             </div>
           </div>
@@ -556,7 +565,7 @@ export default function App() {
           <div style={{ border:"0.5px solid var(--color-border-tertiary)", borderRadius:"var(--border-radius-lg)", overflow:"hidden", marginTop: f4Sort.length > 1 ? 8 : 0 }}>
             {f4Loading
               ? <div style={{ padding:40, textAlign:"center", color:"var(--color-text-secondary)", fontSize:13 }}>Fetching SEC EDGAR Form 4 filings…</div>
-              : <Form4Table data={f4Data} filter={f4Filter} sorts={f4Sort} setSorts={setF4Sort} />}
+              : <Form4Table data={f4Data} filter={f4Filter} sorts={f4Sort} setSorts={setF4Sort} search={search} />}
           </div>
           <div style={{ display:"flex", alignItems:"center", gap:16, marginTop:10, flexWrap:"wrap" }}>
             <p style={{ fontSize:11, color:"var(--color-text-secondary)", margin:0 }}>
@@ -577,7 +586,11 @@ export default function App() {
         <div>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12, flexWrap:"wrap", gap:8 }}>
             <StatusBadge live={cgLive} />
-            <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+            <div style={{ display:"flex", gap:8, flexWrap:"wrap", alignItems:"center" }}>
+              <input type="text" placeholder="Search ticker or company…" value={search}
+                onChange={e => setSearch(e.target.value.toLowerCase())}
+                style={{ fontSize:12, padding:"4px 10px", borderRadius:6, border:"0.5px solid var(--color-border-tertiary)",
+                  background:"var(--color-background-secondary)", color:"var(--color-text-primary)", width:180, outline:"none" }} />
               {["All","Purchase","Sale"].map(f=><FilterBtn key={f} label={f} active={cgFilter===f} onClick={()=>setCgFilter(f)} />)}
               <div style={{ width:"0.5px", background:"var(--color-border-tertiary)", margin:"0 4px" }} />
               {["All","House","Senate"].map(f=><FilterBtn key={f} label={f} active={cgChamber===f} onClick={()=>setCgChamber(f)} />)}
@@ -594,7 +607,7 @@ export default function App() {
           <div style={{ border:"0.5px solid var(--color-border-tertiary)", borderRadius:"var(--border-radius-lg)", overflow:"hidden", marginTop: cgSort.length > 1 ? 8 : 0 }}>
             {cgLoading
               ? <div style={{ padding:40, textAlign:"center", color:"var(--color-text-secondary)", fontSize:13 }}>Fetching congressional disclosures…</div>
-              : <CongressTable data={cgData} filter={cgFilter} chamberFilter={cgChamber} sorts={cgSort} setSorts={setCgSort} />}
+              : <CongressTable data={cgData} filter={cgFilter} chamberFilter={cgChamber} sorts={cgSort} setSorts={setCgSort} search={search} />}
           </div>
           <div style={{ display:"flex", alignItems:"center", gap:16, marginTop:10, flexWrap:"wrap" }}>
             <p style={{ fontSize:11, color:"var(--color-text-secondary)", margin:0 }}>
