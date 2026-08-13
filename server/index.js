@@ -6,8 +6,24 @@ const path    = require('path');
 const { enrichRows } = require('./state-store');
 const app     = express();
 
+// Don't advertise the framework (2026-07-07 security audit).
+app.disable('x-powered-by');
+
 const USER_AGENT = process.env.SEC_USER_AGENT || 'TradeFlowTracker/3.0 your-email@example.com';
 const HEADERS    = { 'User-Agent': USER_AGENT };
+
+// Security headers (2026-07-07 audit). Dependency-free; safe subset that does
+// not restrict resource loading, so the prebuilt SPA still renders. Locks down
+// clickjacking, MIME-sniffing, referrer leakage and feature access.
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
+  res.setHeader('Strict-Transport-Security', 'max-age=63072000; includeSubDomains');
+  next();
+});
 
 app.use(cors());
 
